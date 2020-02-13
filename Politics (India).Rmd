@@ -1,0 +1,411 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+plot(cars)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+#read datasets
+setwd('C:/Users/russe/Desktop/social networks/hw3')
+district<-read.csv('district_information.csv')
+rain<-read.csv('rain_information.csv')
+border<-read.csv('border_information.csv')
+new_party<-read.csv('new_parties_in_each_district_by_candidate.csv')
+
+
+#install package
+install.packages('dplyr')
+install.packages('plm')
+install.packages('tidyverse')
+install.packages('pglm')
+install.packages('panelAR')
+install.packages('data.table')
+
+
+#library package
+library('dplyr')
+library('data.table')
+
+Q1
+A.Create a figure, for example, a scatter plot, showing the visual relationship between the
+level of rainfall in a district in the period leading up to the current election, and the
+number of political parties that are founded in a region.
+```{r}
+#left join two dataset
+rain_district<-left_join(rain,district,by=c('district'='district','year'='year'),copy=TRUE)
+#delete years after 1999 as it's the end year for election in the dataset
+rain_district<-rain_district[rain_district$year<=1999,]
+#check the data from the bottom
+bottom<-rain_district[rev(rownames(rain_district)),]
+#many district does not have election but have rain level of 1946, delete them after combine rain level with election
+#market the different periods of election using index number; calculate the length of election period
+k<-1
+year<-c()
+rain_district$year_betw<-NA
+rain_district$index<-NA
+for (i in 1:18113){
+  if (is.na(rain_district[i,5])==TRUE){
+    rain_district$index[i]<-k
+    year<-c(year,rain_district$year[i])
+  } else {
+    rain_district$index[i]<-k
+    k<-k+1
+    year<-c(year,rain_district$year[i])
+    rain_district$year_betw[i]<-max(year)-min(year)
+    year<-c(rain_district$year[i])
+  }
+}
+dt<-as.data.table(rain_district)
+#calculate level of rainfall
+dt[,c('avg','sum'):=list(mean(spi),sum(rain)),by=.(district,index)]
+#delete NA (), delete those years do not have elections as i have calculated the rain level based on those years
+dt<-dt[!is.na(dt$state),]
+#select needed columns
+dt1<-dt[,c(1,2,3,4,6,26,28,29)]
+#check NA
+sum(is.na(dt1))
+#make scatter plots
+library(ggplot2)
+#use the sum of rain fall 
+ggplot(dt1, aes(x=avg, y=new_parties)) + geom_point()
+#use the average of spi
+ggplot(dt1, aes(x=sum, y=new_parties)) + geom_point()
+```
+
+
+B.Using the election-period level rainfall measures created above, show that the raw level
+of rainfall, as well as the Standardized Precipitation Index, are not independent from
+one election period to the next within a district, as well as from neighboring districts
+from one election period to the next
+
+```{r}
+#get lagged values
+lagged_avg<-as.data.table(matrix(ncol = 1))
+lagged_sum<-as.data.table(matrix(ncol = 1))
+district_name<-unique(dt1$district)
+#lagged spi
+for (i in district_name){
+  lagged_avg<-rbind(lagged_avg,shift(dt1[district==i,7]),fill=TRUE)
+}
+colnames(lagged_avg)<-'lagged_avg'
+lagged_avg<-lagged_avg[-1,]
+#lagged rainfall level 
+for (i in district_name){
+  lagged_sum<-rbind(lagged_sum,shift(dt1[district==i,8]),fill=TRUE)
+}
+colnames(lagged_sum)<-'lagged_sum'
+lagged_sum<-lagged_sum[-1,]
+#combine datasets 
+dt_reg<-cbind(dt1,lagged_avg,lagged_sum)
+
+
+#get neighbour's lagged value
+df<-as.data.frame(dt1)
+#make empty df 
+regress<-as.data.frame(matrix(ncol =7 ))
+regress_final<-as.data.frame(matrix(ncol =7 ))
+#get district name list
+name<-unique(df$district)
+k<-1
+#calculate the lagged values of neighbour's rainfall level and spi, column bind with district's current level
+for (i in name){
+  years<-df[df$district==i,2]
+  for (j in years){
+      border_list<-border[border$focal_district==i,2]
+      regress[k,1:5]<-df[df$district==i&df$year==j,c(1,2,6,7,8)]
+      avg1<-c()
+      avg2<-c() 
+    for (l in border_list){
+        avg1<-append(avg1,c(df[df$district==l&df$year==j,7]))
+        avg2<-append(avg2,c(df[df$district==l&df$year==j,8])) 
+    }
+      regress[k,6]<-mean(avg1,na.rm = TRUE)
+      regress[k,7]<-mean(avg2,na.rm = TRUE)
+      k<-k+1 
+  }
+  regress$V6<-shift(regress$V6)
+  regress$V7<-shift(regress$V7)
+  regress_final<-rbind(regress_final,regress)
+  regress<-as.data.frame(matrix(ncol =7 ))
+  k<-1
+}
+regress_final<-regress_final[-1,]
+#delete na and nan rows
+#regress_final<-regress_final[complete.cases(regress_final),]
+colnames(regress_final)<-c('district','year','year_betw','spi','rainfall','border_spi','border_rainfall')
+
+#combine
+#rain fall measurements
+combine<-cbind(regress_final,dt_reg[,9:10])
+combine1<-suppressWarnings(plm(rainfall ~ border_rainfall+year_betw+lagged_sum,combine, effect = "twoways", model = "within",index = 'district'))
+summary(combine1)
+#SPI
+combine2<-suppressWarnings(plm(rainfall ~ border_spi+year_betw+lagged_avg,combine, effect = "twoways", model = "within",index = 'district'))
+summary(combine2)
+```
+From the regression result, we can see both lagged value of the district and lagged value of its neighbours have small p-value in the models so that the raw level of rainfall, as well as the Standardized Precipitation Index, are not independent from one election period to the next within a district, as well as from neighboring districts from one election period to the next.
+
+
+C.Meteorological scientists consider moderate droughts to occur if the Standardized Precipitation Index falls below -1, and moderate floods to occur if it rises above 1.
+Create a measure that sums the number of years a district experiences either moderate droughts or floods during the interval starting from the year following the previous election up until the year of the current election. Perform the same test as in (B), using this new transformed measure. This measure will form the basis for the predictors used in the remainder of the regressions in Questions 2-5.
+What differences do you see between the estimates?
+
+```{r}
+#delete NA 
+rain_district<-rain_district[!is.na(rain_district$spi),]
+#classify as extreme weather if spi>1 or spi<1
+rain_district[rain_district$spi>1|rain_district$spi< -1,'extreme']<-1
+rain_district$extreme[is.na(rain_district$extreme)]<-0
+#convert into datatable
+dt3<-as.data.table(rain_district)
+#calculate number of extreme weather for each election period
+dt3[,c('avg','sum','number_extreme'):=list(mean(spi),sum(rain),sum(extreme)),by=.(district,index)]
+#delete NA (), delete those years do not have elections 
+dt3<-dt3[!is.na(dt3$state),]
+#select needed columns
+dt3<-dt3[,c(1,2,26,31)]
+
+#get lagged values
+lagged_extreme<-as.data.table(matrix(ncol = 1))
+district_name<-unique(dt3$district)
+#lagged number_extreme
+for (i in district_name){
+  lagged_extreme<-rbind(lagged_extreme,shift(dt3[district==i,4]),fill=TRUE)
+}
+colnames(lagged_extreme)<-'lagged_extreme'
+lagged_extreme<-lagged_extreme[-1,]
+#combine datasets 
+dt_reg<-cbind(dt3,lagged_extreme)
+#regress current level to lagged value
+library('pglm')
+
+#get neighbour's lagged number of extreme weathers
+regress<-as.data.frame(matrix(ncol =5 ))
+regress_lag1<-as.data.frame(matrix(ncol =5 ))
+#get district name list
+name<-unique(dt3$district)
+#convert into datatable
+dt3<-as.data.frame(dt3)
+k<-1
+#calculate the lagged values of neighbour's count of extreme weathers, column bind with district's current level
+for (i in name){
+  years<-dt3[dt3$district==i,2]
+  for (j in years){
+    border_list<-border[border$focal_district==i,2]
+    regress[k,1:4]<-dt3[dt3$district==i&dt3$year==j,c(1,2,3,4)]
+    avg1<-c()
+    avg2<-c()
+    for (l in border_list){
+      avg1<-append(avg1,c(dt3[dt3$district==l&dt3$year==j,4]))
+    }
+    regress[k,5]<-mean(avg1,na.rm = TRUE)
+    k<-k+1
+  }
+  regress$V5<-shift(regress$V5)
+  regress_lag1<-rbind(regress_lag1,regress)
+  regress<-as.data.frame(matrix(ncol =5 ))
+  k<-1
+}
+#delete the first NA row
+regress_lag1<-regress_lag1[-1,]
+#combine current values, lagged values and neighbour's lagged values
+combine_C<-cbind(dt_reg,regress_lag1[,5])
+#set column names
+colnames(combine_C)<-c('district','year','year_betw','extreme','lagged_extreme','neighbour_extreme')
+#regression
+combine_QC<-pglm(extreme ~ neighbour_extreme+year_betw+lagged_extreme, combine_C, effect = "twoways", model = "within", index = "district",family = "poisson")
+summary(combine_QC)
+
+```
+Difference: In QB we can see both lagged SPI and raw rainfall level are good predictors of current rainfall level. However, the lagged counts of droughts and floods of both the district itself and its neighbours are not good predictors of the weather condition of the district as the p-value of two predictors are very large. The reason may be that ???????????????????????????????????????
+
+Q2
+
+(1)Run a regression predicting the number of new political parties that are formed as a function of the number of years a district experiences droughts or flooding in the interval starting from the year following the previous election up until the year of the current election.
+
+```{r}
+reg_newparty<-cbind(dt$new_parties,dt3)
+library('panelAR')
+
+Q2.1<-panelAR(dt$new_parties~number_extreme+year_betw, reg_newparty, panelVar = 'district', timeVar = 'year', autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(Q2.1)
+```
+From the regression result we can see actually the foundings of new parties is not related with the number of extreme weathers, but dependent on the length of each election period.
+
+
+(2)In addition to modeling the effect of extreme weather on the overall entry of new parties, do certain kinds of political parties seem to be more likely than other kinds to be formed when a district experiences extreme weather?
+
+```{r}
+reg_result<-as.data.frame(matrix(ncol = 4))
+reg_diff_party<-as.data.frame(cbind(dt[,c(7:16,21:22)],dt3))
+#get names of new parties
+newparty<-names(reg_diff_party)[c(1:5,7:12)]
+j<-1
+for (i in newparty){
+  #f<-as.formula(paste(i,' ~ number_extreme+year_betw+year'))
+  diff_party<-panelAR(reg_diff_party[,i]~number_extreme+year_betw+year, reg_diff_party, 'district', 'year', autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+  diff_party<-summary(diff_party)
+  reg_result[j,2]<-diff_party$coefficients[2]
+  reg_result[j,3]<-diff_party$coefficients[14]
+  reg_result[j,4]<-diff_party$r2
+  reg_result[j,1]<-i
+  j<-j+1
+}
+colnames(reg_result)<-c('party','slope','p-value','r2')
+reg_result<-reg_result[order(reg_result$`p-value`),]
+reg_result
+```
+Insight: We can see that there are two parties having statistically significant relationship with extreme weathers, in which the founding of religious party is positively influenced by extreme weather and the founding of secular party is negatively influenced by extreme weathers.
+
+
+
+Q3
+Use a similar regression to Question 2 to show that, even when taking into account a district’s own droughts and floods, the level of entry of new political parties in a district will also depend on the number of years its neighboring districts experience years of droughts or flooding in the
+interval starting from the year following two elections ago, up until the year of the previous election—the election lead-up interval before the current one.
+
+```{r}
+regress<-as.data.frame(matrix(ncol =5 ))
+regress_lag2<-as.data.frame(matrix(ncol =5 ))
+for (i in name){
+  years<-dt3[dt3$district==i,2]
+  for (j in years){
+    border_list<-border[border$focal_district==i,2]
+    regress[k,1:4]<-dt3[dt3$district==i&dt3$year==j,c(1,2,3,4)]
+    avg1<-c()
+    avg2<-c()
+    for (l in border_list){
+      avg1<-append(avg1,c(dt3[dt3$district==l&dt3$year==j,4]))
+    }
+    regress[k,5]<-mean(avg1,na.rm = TRUE)
+    k<-k+1
+  }
+  regress$V5<-shift(regress$V5)
+  regress_lag2<-rbind(regress_lag2,regress)
+  regress<-as.data.frame(matrix(ncol =5 ))
+  k<-1
+}
+colnames(regress_lag2)<-c('district','year','year_betw','extreme','border_extreme')
+regress_lag2<-regress_lag2[-1,]
+
+reg_lag2<-cbind(dt$new_parties,regress_lag2)
+#reg_lag2<-reg_lag2[complete.cases(reg_lag2),]
+Q3<-panelAR(dt$new_parties~extreme+border_extreme+year+year_betw, reg_lag2, 'district', 'year', autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(Q3)
+```
+
+Q4
+Extreme weather events like droughts or floods can erode the stability of political systems and wear away at the entrenched power bases of large, national-scale parties that have difficulty responding to the needs of affected regions.
+
+A.
+Does experiencing droughts or floods relate differently to the entry and diffusion of political parties depending on their scope?
+
+```{r}
+colnames(regress_lag1)<-c('district','year','year_betw','extreme','border_extreme')
+reg_scope<-cbind(regress_lag1,dt[,17:20])
+#sub_national scope
+sub_national<-panelAR(reg_scope$new_parties_subnational_scope~extreme+border_extreme+year+year_betw, reg_scope, 'district', 'year', autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+#national scope
+national<-panelAR(reg_scope$new_parties_national_scope~extreme+border_extreme+year+year_betw, reg_scope, 'district', 'year', autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+#state
+state<-panelAR(reg_scope$new_parties_state_scope~extreme+border_extreme+year+year_betw, reg_scope, 'district', 'year', autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+#regional
+regional<-panelAR(reg_scope$new_parties_regional_scope~extreme+border_extreme+year+year_betw, reg_scope, 'district', 'year', autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(sub_national)
+summary(national)
+summary(regional)
+summary(state)
+```
+Insight:
+We can see that at different scope the extreme weather has different influence on the entry and diffusion of new parties. Extreme weather at regional and sub-national has very strong influence on founding of new parties. Extreme weather at state level's influence is slightly weaker than that at regional level. At the national level, extreme weathers have very little influence on the entry and diffusion of new parties.
+
+
+B.
+Does experiencing droughts or floods relate to political concentration?
+What does this result illustrate in terms of the concentration or fragmentation of political power in districts affected by extreme weather?
+
+```{r}
+reg_index<-cbind(regress_lag1,dt[,25])
+#regional
+index<-panelAR(political_concentration~extreme+border_extreme+year+year_betw, reg_index, 'district', 'year', autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(index)
+```
+Insight: Yes. As counts of extreme weather in the district and lagged counts of extreme weather in the neighbours both have very samll p-value, it does relate to political concentration. Based on the regression result, count of extreme weather is negatively related to the degree of concentration of political power at a district, especially the lagged count of extreme weather of neighbours. So the more the extreme weathers are, the less concentrated the political power is at the district level.
+
+
+Q5
+To understand the diffusion process more, we want to analyze whether the new parties that appear in a district are the same parties that have appeared in neighboring districts in the past, or if it the process of political organization, rather than the content of a specific political party, that is diffusing. To analyze this, run two separate regressions predicting the likelihood of (1) new political parties being founded in a district, that have contested an election in a neighboring district in any previous election period, and (2) new political parties being founded in a district that have not contested an election in a neighboring district in any previous election period.
+
+
+As in Questions 3 and 4, estimate these as a function of the number of years of droughts or flooding that occur in a district in the interval leading up to the current election and the years of droughts or flooding that occur that occur in its neighboring districts in the period leading up to the prior election.
+
+
+What does the results illustrate about the level and process diffusion of political organizing?
+
+
+(1)
+```{r}
+dt4<-as.data.frame(dt3)
+#get district name list
+name<-unique(dt4$district)
+party_generated<-c()
+k<-1
+for (i in name){
+  years<-dt4[dt4$district==i,2]
+  for (j in years){
+    border_list<-border[border$focal_district==i,2]
+    for (l in border_list){
+      party_generated<-append(party_generated,as.vector(new_party[new_party$district==l&new_party$year==j,5]))
+    }
+    count<-sum(as.vector(new_party[new_party$district==i&new_party$year==j,5]) %in% party_generated)
+    dt4[k,'party_founded']<-count
+    k<-k+1
+  }
+  party_generated<-c()
+}
+
+dt4<-cbind(dt4,regress_lag2$border_extreme)
+
+Q5.1<-panelAR(party_founded~number_extreme+regress_lag2$border_extreme+year+year_betw, dt4, 'district', 'year', autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(Q5.1)
+```
+
+(2)
+```{r}
+#get district name list
+name<-unique(dt4$district)
+party_generated<-c()
+k<-1
+for (i in name){
+  years<-dt4[dt4$district==i,2]
+  for (j in years){
+    border_list<-border[border$focal_district==i,2]
+    for (l in border_list){
+      party_generated<-append(party_generated,as.vector(new_party[new_party$district==l&new_party$year==j,5]))
+    }
+    count<-sum(!as.vector(new_party[new_party$district==i&new_party$year==j,5]) %in% party_generated)
+    dt4[k,'party_founded_no_in_neighbours']<-count
+    k<-k+1
+  }
+  party_generated<-c()
+}
+
+Q5.2<-panelAR(party_founded_no_in_neighbours~number_extreme+regress_lag2$border_extreme+year+year_betw, dt4, 'district', 'year', autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(Q5.2)
+```
+
+
+
